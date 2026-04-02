@@ -98,11 +98,9 @@ def main():
     renderer = Renderer(model_cfg, faces=model.mano.faces)
     os.makedirs(args.out_folder, exist_ok=True)
     img_paths = [p for ext in args.file_type for p in Path(args.img_folder).glob(ext)]
-    print(f"REACHED LOOP, {len(img_paths)} images") 
     results = []
 
     for img_path in img_paths:
-        print(f"Processing: {img_path}")
         img_cv2 = cv2.imread(str(img_path))
         det_out = detector(img_cv2)
         img_rgb = img_cv2[:, :, ::-1]
@@ -111,8 +109,6 @@ def main():
         keep = (inst.pred_classes == 0) & (inst.scores > 0.5)
         bboxes = inst.pred_boxes.tensor[keep].cpu().numpy()
         scores = inst.scores[keep].cpu().numpy()
-
-        print(f"Processing: {img_path}")
 
         vit_outs = cpm.predict_pose(img_rgb, [np.concatenate([bboxes, scores[:, None]], axis=1)])
         hand_boxes, is_right = [], []
@@ -128,9 +124,7 @@ def main():
                     hand_boxes.append([x0, y0, x1, y1])
                     is_right.append(hand_idx)
                     vitpose_conf_per_hand.append(hand_kpts[:, 2].tolist())
-            print(f"  → Hand boxes found: {len(hand_boxes)}")
         if not hand_boxes:
-            print("  → SKIPPING (no hands)") 
             continue
 
         boxes = np.stack(hand_boxes)
