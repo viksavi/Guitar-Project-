@@ -106,12 +106,13 @@ for fn in all_frames:
         'confidence':    np.array(best_entry['confidence']),     # (21,)
         'vitpose_score': best_entry.get('vitpose_score'),
         'image_name':    best_entry['image_name'],
+        'pred_mano_params': best_entry['pred_mano_params'],
     })
     view_counts[best_view] += 1
 
 output.sort(key=lambda x: x['frame_number'])
 
-# ── Save ─────────────────────────────────────────────────────────────────────
+# ── Save ───────────────────────────""" """──────────────────────────────────────────
 
 with open(args.out, 'wb') as f:
     pickle.dump(output, f)
