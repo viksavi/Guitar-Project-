@@ -3,46 +3,44 @@ import numpy as np
 import argparse
 from collections import defaultdict
 
+# joint constants
 MANO_JOINT_NAMES = [
-    'Wrist',                        # 0  ← root joint
-    'Thumb_CMC',                    # 1
-    'Thumb_MCP',                    # 2
-    'Thumb_IP',                     # 3
-    'Thumb_Tip',                    # 4  ← fingertip
-    'Index_MCP',                    # 5
-    'Index_PIP',                    # 6
-    'Index_DIP',                    # 7
-    'Index_Tip',                    # 8  ← fingertip
-    'Middle_MCP',                   # 9
-    'Middle_PIP',                   # 10
-    'Middle_DIP',                   # 11
-    'Middle_Tip',                   # 12 ← fingertip
-    'Ring_MCP',                     # 13
-    'Ring_PIP',                     # 14
-    'Ring_DIP',                     # 15
-    'Ring_Tip',                     # 16 ← fingertip
-    'Pinky_MCP',                    # 17
-    'Pinky_PIP',                    # 18
-    'Pinky_DIP',                    # 19
-    'Pinky_Tip',                    # 20 ← fingertip
+    'Wrist',       'Thumb_CMC',  'Thumb_MCP',  'Thumb_IP',   'Thumb_Tip',
+    'Index_MCP',   'Index_PIP',  'Index_DIP',  'Index_Tip',
+    'Middle_MCP',  'Middle_PIP', 'Middle_DIP', 'Middle_Tip',
+    'Ring_MCP',    'Ring_PIP',   'Ring_DIP',   'Ring_Tip',
+    'Pinky_MCP',   'Pinky_PIP',  'Pinky_DIP',  'Pinky_Tip',
 ]
-
 FINGERTIP_INDICES = [4, 8, 12, 16, 20]
-MCP_INDICES       = [1, 5, 9,  13, 17]  # knuckles
-PIP_INDICES       = [2, 6, 10, 14, 18]  # middle joints
-DIP_INDICES       = [3, 7, 11, 15, 19]  # upper joints
+MCP_INDICES       = [1, 5, 9,  13, 17]
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--pkl', type=str, nargs='+', required=True,
                     help='2 or 3 PKL files: --pkl view1.pkl view2.pkl [view3.pkl]')
+parser.add_argument('--calib', type=str, required=True,
+                    help='Path to calibration.pkl')
 parser.add_argument('--out', type=str, default='best_hands.pkl')
 args = parser.parse_args()
 
 assert 2 <= len(args.pkl) <= 3, "Pass 2 or 3 pkl files"
 
+# calibration loading
+with open(args.calib, 'rb') as f:
+    calib = pickle.load(f)
+
+VIEW_TO_CAM = {'view1': 'cam1', 'view2': 'cam2', 'view3': 'cam3'}
+
+def joints_to_cam2(joints_3d, view_name):
+    """Transform joints from any camera space → cam2 world space."""
+    cam = VIEW_TO_CAM[view_name]
+    R   = calib[cam]['R']
+    T   = calib[cam]['T']
+    return (R @ joints_3d.T + T).T  # (21, 3)
+
 def frame_number(image_name):
     return int(image_name.split('_')[1].split('.')[0])
 
+# defining score for selecting best-view
 def hand_score(entry):
     if entry is None:
         return -1.0
@@ -52,8 +50,7 @@ def hand_score(entry):
         vitpose = float(np.mean(vitpose))
     if vitpose < 0.5:
         return 0.0
-    key_joints = FINGERTIP_INDICES + MCP_INDICES
-    key_conf   = np.mean(conf[key_joints])
+    key_conf = np.mean(conf[FINGERTIP_INDICES + MCP_INDICES])
     return 0.3 * vitpose + 0.7 * key_conf
 
 def load_and_index(pkl_path):
@@ -62,12 +59,13 @@ def load_and_index(pkl_path):
     index = {}
     for entry in results:
         if not entry['is_right']:
-            continue                          # skip left hand
+            continue
         fn = frame_number(entry['image_name'])
         if fn not in index or hand_score(entry) > hand_score(index[fn]):
-            index[fn] = entry                 
+            index[fn] = entry
     return index
 
+# ── Load all views ────────────────────────────────────────────────────────────
 print(f"\nLoading {len(args.pkl)} views...")
 views = {}
 for i, pkl_path in enumerate(args.pkl):
@@ -75,9 +73,10 @@ for i, pkl_path in enumerate(args.pkl):
     views[view_name] = load_and_index(pkl_path)
     print(f"  {view_name}: {len(views[view_name])} frames  ← {pkl_path}")
 
-all_frames = sorted(set(fn for v in views.values() for fn in v.keys()))
+all_frames  = sorted(set(fn for v in views.values() for fn in v.keys()))
 print(f"\nTotal unique frames: {len(all_frames)}")
 
+# Select best view + transform to cam2 space 
 output      = []
 missing     = 0
 view_counts = defaultdict(int)
@@ -95,30 +94,30 @@ for fn in all_frames:
         missing += 1
         continue
 
+    joints_cam   = np.array(best_entry['pred_joints_3d'])  # original camera space
+    joints_world = joints_to_cam2(joints_cam, best_view)   # cam2 world space
+
     output.append({
-        'frame_number':  fn,
-        'best_view':     best_view,
-        'best_score':    best_sc,
-        # (21, 3) root-relative in HAMER canonical space
-        # wrist = (0,0,0), ready to plug into guitar space later
-        'joints3d':      np.array(best_entry['pred_joints_3d']),
-        'pred_cam_full': np.array(best_entry['pred_cam_full']),  # keep for later
-        'confidence':    np.array(best_entry['confidence']),     # (21,)
-        'vitpose_score': best_entry.get('vitpose_score'),
-        'image_name':    best_entry['image_name'],
+        'frame_number':     fn,
+        'best_view':        best_view,
+        'best_score':       best_sc,
+        'joints3d':         joints_cam,          # original camera space
+        'joints3d_world':   joints_world,         # cam2 world space
+        'pred_cam_full':    np.array(best_entry['pred_cam_full']),
+        'confidence':       np.array(best_entry['confidence']),
+        'vitpose_score':    best_entry.get('vitpose_score'),
+        'image_name':       best_entry['image_name'],
         'pred_mano_params': best_entry['pred_mano_params'],
     })
     view_counts[best_view] += 1
 
 output.sort(key=lambda x: x['frame_number'])
 
-# ── Save ───────────────────────────""" """──────────────────────────────────────────
-
+# ── Save ──────────────────────────────────────────────────────────────────────
 with open(args.out, 'wb') as f:
     pickle.dump(output, f)
 
 # ── Summary ───────────────────────────────────────────────────────────────────
-
 print(f"\n{'─'*50}")
 print(f"Saved to              : {args.out}")
 print(f"Frames with valid hand: {len(output)}")
@@ -130,8 +129,9 @@ for vname, count in sorted(view_counts.items()):
 
 print(f"\nFirst 10 frames preview:")
 for entry in output[:10]:
-    wrist = entry['joints3d'][0]
+    wrist_cam   = entry['joints3d'][0].round(4)
+    wrist_world = entry['joints3d_world'][0].round(4)
     print(f"  frame {entry['frame_number']:>5} | "
           f"view={entry['best_view']} | "
           f"score={entry['best_score']:.3f} | "
-          f"wrist={wrist}")
+          f"wrist_cam={wrist_cam} → wrist_world={wrist_world}")
