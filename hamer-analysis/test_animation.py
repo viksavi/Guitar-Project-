@@ -1,147 +1,84 @@
 import pickle
 import numpy as np
-import torch
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from mpl_toolkits.mplot3d import Axes3D
+from scipy.signal import savgol_filter
 import argparse
 
-
-# ── MANO ─────────────────────────────────────────────────────────────────────
-from smplx import MANO 
+FINGERTIP_INDICES = [4, 8, 12, 16, 20]
+BONES = [
+    (0,1),(1,2),(2,3),(3,4),
+    (0,5),(5,6),(6,7),(7,8),
+    (0,9),(9,10),(10,11),(11,12),
+    (0,13),(13,14),(14,15),(15,16),
+    (0,17),(17,18),(18,19),(19,20)
+]
+BONE_COLORS = [
+    'red','red','red','red',
+    'blue','blue','blue','blue',
+    'green','green','green','green',
+    'orange','orange','orange','orange',
+    'purple','purple','purple','purple',
+]
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--hands',      type=str, required=True)
-parser.add_argument('--mano_dir',   type=str, required=True,
-                    help='Path to MANO model dir containing MANO_RIGHT.pkl')
-parser.add_argument('--out',        type=str, default='hand_mesh.gif')
-parser.add_argument('--fps',        type=int, default=15)
-parser.add_argument('--step',       type=int, default=8)
-parser.add_argument('--max_frames', type=int, default=100)
+parser.add_argument('--pkl',    type=str, required=True)
+parser.add_argument('--out',    type=str, default='hand_animation.mp4')
+parser.add_argument('--fps',    type=int, default=240)
+parser.add_argument('--smooth', type=int, default=7)
+parser.add_argument('--start',  type=int, default=0)
+parser.add_argument('--end',    type=int, default=-1)
+parser.add_argument('--space',  type=str, default='world',
+                    choices=['world', 'cam'],
+                    help='world = cam2 space, cam = original camera space')
 args = parser.parse_args()
 
-# ── Load MANO ─────────────────────────────────────────────────────────────────
-# Replace this:
-mano = MANO(args.mano_dir, use_pca=False, is_rhand=True)
-mano.eval()
-faces = mano.faces
+with open(args.pkl, 'rb') as f:
+    output = pickle.load(f)
 
-# With this — point to the folder, not the file:
-mano = MANO(
-    model_path=args.mano_dir,   # folder containing MANO_RIGHT.pkl
-    use_pca=False,
-    is_rhand=True,
-    flat_hand_mean=True,
-)
-mano.eval()
-faces = mano.faces.astype(int)  # (1538, 3)
+end    = args.end if args.end != -1 else len(output)
+output = output[args.start:end]
+print(f"Animating {len(output)} frames")
 
-# ── Load hand data ────────────────────────────────────────────────────────────
-with open(args.hands, 'rb') as f:
-    best_hands = pickle.load(f)
+# Pick coordinate space
+key = 'joints3d_world' if args.space == 'world' else 'joints3d'
+trajectories = np.array([e[key] for e in output])  # (N, 21, 3)
+frame_labels = [e['image_name'] for e in output]
+view_labels  = [e['best_view']  for e in output]
 
-frames_data = best_hands[::args.step][:args.max_frames]
-print(f"Total in pkl  : {len(best_hands)}")
-print(f"Animating     : {len(frames_data)} frames")
+# Smooth
+if args.smooth > 1:
+    w = args.smooth if args.smooth % 2 == 1 else args.smooth + 1
+    trajectories = savgol_filter(trajectories, window_length=w, polyorder=2, axis=0)
 
-# ── Reconstruct vertices per frame ────────────────────────────────────────────
-from scipy.spatial.transform import Rotation as R
+# Axis limits
+pad = 0.02
+x_min, x_max = trajectories[:,:,0].min()-pad, trajectories[:,:,0].max()+pad
+y_min, y_max = trajectories[:,:,1].min()-pad, trajectories[:,:,1].max()+pad
+z_min, z_max = trajectories[:,:,2].min()-pad, trajectories[:,:,2].max()+pad
 
-def rotmat_to_aa(rotmat: np.ndarray) -> np.ndarray:
-    """Convert rotation matrices (..., 3, 3) → axis-angle (..., 3)."""
-    orig_shape = rotmat.shape[:-2]
-    aa = R.from_matrix(rotmat.reshape(-1, 3, 3)).as_rotvec()
-    return aa.reshape(*orig_shape, 3)
+fig = plt.figure(figsize=(9, 8))
+ax  = fig.add_subplot(111, projection='3d')
 
-def get_vertices(entry):
-    params = entry['pred_mano_params']
+def update(i):
+    ax.cla()
+    joints = trajectories[i]
 
-    global_orient_aa = rotmat_to_aa(np.array(params['global_orient']))  # (1, 3)
-    hand_pose_aa     = rotmat_to_aa(np.array(params['hand_pose']))      # (15, 3)
+    for (a, b), color in zip(BONES, BONE_COLORS):
+        ax.plot(*zip(joints[a], joints[b]), color=color, linewidth=2, alpha=0.8)
 
-    # Fix: both must be 2D (batch, dims)
-    global_orient_t = torch.tensor(global_orient_aa.reshape(1, 3),  dtype=torch.float32)  # (1, 3)
-    hand_pose_t     = torch.tensor(hand_pose_aa.reshape(1, 45),     dtype=torch.float32)  # (1, 45)
-    betas_t         = torch.tensor(np.array(params['betas']).reshape(1, 10), dtype=torch.float32)  # (1, 10)
+    ax.scatter(*joints.T,                  c='gray', s=15, zorder=5)
+    ax.scatter(*joints[FINGERTIP_INDICES].T, c='red',  s=60, zorder=6)
+    ax.scatter(*joints[0],                 c='black', s=80, marker='s', zorder=6)
 
-    with torch.no_grad():
-        out = mano(
-            global_orient=global_orient_t,
-            hand_pose=hand_pose_t,
-            betas=betas_t,
-            return_tips=True
-        )
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
+    ax.set_zlim(z_min, z_max)
+    ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
+    ax.set_title(f"{frame_labels[i]} | {view_labels[i]} | score={output[i]['best_score']:.0f}")
 
-    return out.vertices[0].numpy()   # (778, 3)
-
-# ── Pre-compute all vertices + axis limits ────────────────────────────────────
-print("Reconstructing vertices from MANO params...")
-all_verts = []
-for i, entry in enumerate(frames_data):
-    verts = get_vertices(entry)
-    all_verts.append(verts)
-    if i % 20 == 0:
-        print(f"  {i}/{len(frames_data)}")
-
-all_verts_np = np.concatenate(all_verts, axis=0)
-center = all_verts_np.mean(axis=0)
-spread = max(
-    all_verts_np[:,0].max() - all_verts_np[:,0].min(),
-    all_verts_np[:,1].max() - all_verts_np[:,1].min(),
-    all_verts_np[:,2].max() - all_verts_np[:,2].min(),
-) / 2 + 0.02
-
-print("Vertices ready.")
-
-# ── Figure ────────────────────────────────────────────────────────────────────
-fig = plt.figure(figsize=(8, 8), facecolor='black')
-ax  = fig.add_subplot(111, projection='3d', facecolor='black')
-
-ax.set_xlim(center[0] - spread, center[0] + spread)
-ax.set_ylim(center[1] - spread, center[1] + spread)
-ax.set_zlim(center[2] - spread, center[2] + spread)
-ax.set_axis_off()
-
-title = ax.set_title('', color='white', fontsize=9)
-
-# Mesh collection — skin tone color
-mesh_collection = Poly3DCollection(
-    [],
-    alpha=0.85,
-    facecolor='#C68642',   # skin tone
-    edgecolor='none',
-)
-ax.add_collection3d(mesh_collection)
-
-# ── Update ────────────────────────────────────────────────────────────────────
-def update(frame_idx):
-    entry = frames_data[frame_idx]
-    verts = all_verts[frame_idx]          # (778, 3)
-
-    triangles = verts[faces]              # (1538, 3, 3)
-    mesh_collection.set_verts(triangles)
-
-    title.set_text(
-        f"frame {entry['frame_number']:05d}  |  "
-        f"view={entry['best_view']}  |  "
-        f"score={entry['best_score']:.3f}"
-    )
-    return [mesh_collection, title]
-
-# ── Animate ───────────────────────────────────────────────────────────────────
-ani = animation.FuncAnimation(
-    fig, update,
-    frames=len(frames_data),
-    interval=1000 // args.fps,
-    blit=False
-)
-
-print(f"Saving → {args.out} ...")
-if args.out.endswith('.gif'):
-    ani.save(args.out, writer='pillow', fps=args.fps,
-             savefig_kwargs={'facecolor': 'black'})
-else:
-    ani.save(args.out, writer='ffmpeg', fps=args.fps,
-             savefig_kwargs={'facecolor': 'black'})
-
-print("Done!")
+ani = animation.FuncAnimation(fig, update, frames=len(output), interval=1000//args.fps)
+ani.save(args.out, writer='ffmpeg', fps=args.fps, dpi=150)
+plt.close()
+print(f"Saved → {args.out}")
