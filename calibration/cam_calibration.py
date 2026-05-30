@@ -170,6 +170,7 @@ calibration = {
     'cam2': {'K': K2, 'dist': dist2, 'R': np.eye(3), 'T': np.zeros((3,1))},
     'cam3': {'K': K3, 'dist': dist3, 'R': R_2_3, 'T': T_2_3},
 }
+
 with open('../data/calibration/calibration.pkl', 'wb') as f:
     pickle.dump(calibration, f)
 print("Calibration saved!")

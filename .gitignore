@@ -1,4 +1,5 @@
 hamer/
 data/
 .vscode/
-.WiLoR/
+WiLoR/
+threejs_export_test/
