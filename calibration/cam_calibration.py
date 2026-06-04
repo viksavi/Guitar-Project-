@@ -174,5 +174,3 @@ calibration = {
 with open('../data/calibration/calibration.pkl', 'wb') as f:
     pickle.dump(calibration, f)
 print("Calibration saved!")
-
-
