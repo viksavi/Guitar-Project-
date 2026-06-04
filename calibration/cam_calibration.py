@@ -68,13 +68,6 @@ folders = [
 ]
 
 min_duration = min(get_duration(v) for v in videos)
-# print(f"Shortest video: {min_duration:.2f} seconds")
-
-# # Now extract same timestamps for all cameras
-# for video, folder in zip(videos, folders):
-#     extract_frames_by_time(video, folder, 
-#                            duration=min_duration, 
-#                            n_frames=40)
     
 # detect corners of the checkerboard
 def detect_corners(img_folder):
@@ -111,7 +104,7 @@ def calibrate_camera(obj_points, img_points, img_size):
     print(f"  Principal pt : cx={K[0,2]:.1f}, cy={K[1,2]:.1f}")
     return K, dist
 
-# Cell 4 — extrinsics (camera positions relative to cam2)
+# extrinsics (camera positions relative to cam2)
 def stereo_calibrate(obj_pts_1, img_pts_1, idx_1,
                      obj_pts_2, img_pts_2, idx_2,
                      K1, dist1, K2, dist2, img_size):
