@@ -1,0 +1,59 @@
+#canvas-container {
+    width: 100vw;
+    height: 100vh;
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 1; /* Sits behind the UI */
+}
+
+#ui-overlay {
+    position: absolute;
+    bottom: 20px;
+    left: 18%;
+    z-index: 10; /* Sits on top of the 3D canvas */
+    pointer-events: none; /* Allows mouse dragging to pass through to Three.js */
+    background-color: rgba(0, 0, 0, 0.85);
+    padding: 20px;
+}
+
+/* Styling the bar */
+.bar-container {
+    width: 1000px;
+    height: 15px;
+    background-color: rgba(0, 0, 0, 0.5);
+    border: 2px solid #fff;
+    overflow: hidden;
+}
+
+#progress-bar {
+    width: 0%;
+    height: 100%;
+    background-color: #ffffff; /* #ff00cc */
+    transition: width 0.2s ease-out;
+}
+    
+.below-bar-container {
+    width: 1000px;
+    height: 50px;
+    margin-top: 5px;
+}
+
+button.pauseButton {
+    border: 2px solid #fff;
+    background-color: black;
+    color: white;
+    padding: 7px;
+    
+    font-size: 16px;
+    font-family: 'Courier New', monospace;
+}
+
+#playbackInfo {
+    color: white;
+    padding: 7px;
+    float: right;
+
+    font-size: 18px;
+    font-family: 'Courier New', monospace;
+}

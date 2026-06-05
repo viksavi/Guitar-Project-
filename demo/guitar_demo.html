@@ -1,0 +1,779 @@
+ <!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+
+<title>WiLoR Hand Viewer</title>
+
+
+<link href="./rsc/css/style.css" rel="stylesheet"/>
+
+
+</head>
+
+<body>
+
+<div id="canvas-container"></div>
+
+<div id="ui">
+
+  <h3>Guitar + Hands pose estimation</h3>
+
+
+  <div id="status">Loading…</div>
+
+
+  <div id="time-info"></div>
+
+  <div id="frame-info"></div>
+
+  <div class="ctrl">
+
+    <button id="btn-play">▶ Play</button>
+
+    <button id="btn-reset">⟳ Reset</button>
+
+  </div>
+
+  <div class="ctrl">
+
+    Speed: <input type="range" id="speed" min="0.2" max="2" value="1" step="0.1">
+
+    <span id="speed-val">1×</span>
+
+  </div>
+
+  <div class="ctrl">
+
+    <label><input type="checkbox" id="chk-wire"> Wireframe</label>
+
+  </div>
+
+  <div class="ctrl">
+
+    <label><input type="checkbox" id="chk-axes" checked> Axes</label>
+
+  </div>
+
+  <div style="margin-top:8px; color:#666; font-size:11px;">
+
+    Drag to orbit · Scroll to zoom · Right-drag to pan
+
+  </div>
+
+</div>
+
+
+  <audio id="video-sound" controls src="./data/video_a_p_s/audio.wav"></audio>
+
+<div id="loading-bar-wrap"><div id="loading-bar"></div></div>
+
+
+
+
+
+
+  <script async src="https://unpkg.com/es-module-shims@1.3.6/dist/es-module-shims.js"></script>
+
+  <script type="importmap">
+
+    {
+
+      "imports": {
+
+        "three": "https://unpkg.com/three@0.182.0/build/three.module.js",
+
+        "three/addons/": "https://unpkg.com/three@0.182.0/examples/jsm/"
+
+      }
+
+    }
+
+  </script>
+
+
+
+<script type="module">
+
+
+
+
+
+import * as THREE from 'three';
+
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+
+import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+import * as FUNC from './functions.js';
+
+
+
+
+// ── CONFIG ———————————————————————————————————————————————————————————————
+
+const BASE = './data';
+
+const VIDEO = 'video_a_p_s';
+
+const MODEL_NAME = 'guitar_fretboard_frets'; // "guitar_low", "guitar_fretboard", "guitar_nomat"
+
+// ─────────────────────────────────────────────────────────────────────────
+
+
+
+
+const status    = document.getElementById('status');
+
+const timeInfo  = document.getElementById('time-info');
+
+const frameInfo = document.getElementById('frame-info');
+
+const bar       = document.getElementById('loading-bar');
+
+
+const videoSound = document.getElementById('video-sound');
+
+
+function setStatus(s) { status.textContent = s; }
+
+function setBar(p)    { bar.style.width = (p * 100) + '%'; }
+
+
+
+
+var guitar; // guitar model
+
+// average translation vector and rotation vector
+
+var avgTvec;
+
+var avgRvec;
+
+
+const clock = new THREE.Clock();
+
+let elapsedTime = 0;
+
+
+
+
+
+// ── Scene setup ────────────────────────────────────────────────────────────
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+
+renderer.setPixelRatio(window.devicePixelRatio);
+
+renderer.setSize(window.innerWidth, window.innerHeight);
+
+document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+
+const scene  = new THREE.Scene();
+
+scene.background = new THREE.Color(0x1a1a2e);
+
+
+// Lighting
+
+const amb  = new THREE.AmbientLight(0xffffff, 0.5);
+
+const dir1 = new THREE.DirectionalLight(0xffffff, 0.8);
+
+const dir2 = new THREE.DirectionalLight(0x8888ff, 0.4);
+
+dir1.position.set(1, 2, 2);
+
+dir2.position.set(-1, -1, 1);
+
+scene.add(amb, dir1, dir2);
+
+
+// Axes helper (X=red, Y=green, Z=blue=depth)
+
+const axes = new THREE.AxesHelper(0.1);
+
+scene.add(axes);
+
+
+// Grid on XY plane for spatial reference
+
+const grid = new THREE.GridHelper(2, 20, 0x333355, 0x222244);
+
+grid.rotation.x = Math.PI / 2;   // face camera (XY plane)
+
+grid.position.z = 0.46;          // at approximate hand depth
+
+scene.add(grid);
+
+
+
+
+
+
+
+// Camera — will be updated from meta intrinsics
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 20);
+
+camera.position.set(0, 0, 0);    // camera at origin, looking down +Z
+
+camera.lookAt(0, 0, 1);
+
+
+// Flip entire scene X to match real camera view (OpenCV X-right → Three.js mirrored)
+
+scene.scale.x = -1;
+
+
+const controls = new OrbitControls(camera, renderer.domElement);
+
+controls.target.set(0, 0, 0.46);
+
+controls.update();
+
+
+window.addEventListener('resize', () => {
+
+  camera.aspect = window.innerWidth / window.innerHeight;
+
+  camera.updateProjectionMatrix();
+
+  renderer.setSize(window.innerWidth, window.innerHeight);
+
+});
+
+
+
+
+
+
+
+
+
+
+// ── Load hands data ──────────────────────────────────────────────────────────────
+
+setStatus('Fetching metadata…'); setBar(0.05);
+
+const [meta, meshData] = await Promise.all([
+
+  fetch(`${BASE}/${VIDEO}/hands/hands_meta.json`).then(r => r.json()),
+
+  fetch(`${BASE}/${VIDEO}/hands/hands_mesh.json`).then(r => r.json()),
+
+]);
+
+
+// Update camera FOV from real intrinsics
+
+const fovY = 2 * Math.atan(meta.imgHeight / (2 * meta.camera.fy)) * (180 / Math.PI);
+
+camera.fov = fovY;
+
+camera.aspect = meta.imgWidth / meta.imgHeight;
+
+camera.updateProjectionMatrix();
+
+
+setStatus('Loading right hand…'); setBar(0.2);
+
+const rightBuf = await fetch(`${BASE}/${VIDEO}/hands/hands_right.bin`).then(r => r.arrayBuffer());
+
+setBar(0.3);
+
+
+setStatus('Loading left hand…'); setBar(0.55);
+
+const leftBuf  = await fetch(`${BASE}/${VIDEO}/hands/hands_left.bin`).then(r => r.arrayBuffer());
+
+setBar(0.5);
+
+
+const rightVerts = new Float32Array(rightBuf);
+
+const leftVerts  = new Float32Array(leftBuf);
+
+const faces      = new Uint32Array(meshData.faces.flat());
+
+
+const N = meta.frameCount;
+
+const V = meta.vertCount;
+
+
+
+
+setStatus('Building hand meshes…'); setBar(0.6);
+
+
+// ── Build hand meshes ──────────────────────────────────────────────────────
+
+function makeHandMesh(color) {
+
+  const geo = new THREE.BufferGeometry();
+
+  const pos = new Float32Array(V * 3);
+
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+
+  geo.setIndex(new THREE.BufferAttribute(faces, 1));
+
+  geo.computeVertexNormals();
+
+  const mat = new THREE.MeshStandardMaterial({
+
+    color,
+
+    roughness: 0.6,
+
+    metalness: 0.1,
+
+    side: THREE.DoubleSide,
+
+  });
+
+  const wireMat = new THREE.MeshBasicMaterial({
+
+    color: 0xffffff, wireframe: true, transparent: true, opacity: 0.15
+
+  });
+
+  const mesh = new THREE.Mesh(geo, mat);
+
+  const wire = new THREE.Mesh(geo, wireMat);
+
+  wire.visible = false;
+
+  const group = new THREE.Group();
+
+  group.add(mesh, wire);
+
+  // group.rotation.set(0, Math.PI, 0);
+
+  return { group, mesh, wire, geo };
+
+}
+
+
+const right = makeHandMesh(0x7799ff);
+
+const left  = makeHandMesh(0xff9977);
+
+scene.add(right.group, left.group);
+
+
+
+
+
+
+
+
+// ── Animation state ────────────────────────────────────────────────────────
+
+let frameIdx = 0;
+
+let playing  = false;
+
+let lastTime = 0;
+
+let speedMul = 1;           // play at 4× by default (240fps source → 60fps display)
+
+
+function updateMesh(hand, verts, fi) {
+
+  const offset = fi * V * 3;
+
+  const slice  = verts.subarray(offset, offset + V * 3);
+
+  const hasData = !isNaN(slice[0]);
+
+  hand.group.visible = hasData;
+
+  if (!hasData) return;
+
+  hand.geo.attributes.position.array.set(slice);
+
+  hand.geo.attributes.position.needsUpdate = true;
+
+  hand.geo.computeVertexNormals();
+
+}
+
+
+
+
+
+
+
+setStatus('Loading guitar model…'); setBar(0.7);
+
+
+// ── Load guitar model ────────────────────────────────────────────────────────────────
+
+// Used for rotating and flipping the guitar
+const guitarGroup = new THREE.Group();
+scene.add(guitarGroup);
+
+const guitarPivot = new THREE.Group();
+guitarGroup.add(guitarPivot);
+
+async function initModel() {
+
+  try {
+
+    const textureLoader = new THREE.TextureLoader();
+
+    const myTexture = await textureLoader.loadAsync('./rsc/models/' + MODEL_NAME + '/texture.png');
+
+    myTexture.colorSpace = THREE.SRGBColorSpace;
+
+
+    const mtlLoader = new MTLLoader();
+
+    const materials = await mtlLoader.loadAsync('./rsc/models/' + MODEL_NAME + '/material.mtl');
+
+    materials.preload();
+
+
+    const objLoader = new OBJLoader();
+
+    objLoader.setMaterials(materials);
+
+
+    const object = await objLoader.loadAsync('./rsc/models/' + MODEL_NAME + '/model.obj');
+
+
+    // Apply textures
+
+    object.traverse((child) => {
+
+      if (child.isMesh) {
+
+        if (MODEL_NAME !== "guitar_nomat") {
+
+          child.material.map = myTexture;
+
+        }
+
+        child.material.needsUpdate = true;
+
+      }
+
+    });
+
+
+
+
+
+    // ── Add guitar model to scene ────────────────────────────────────────────────────────────
+
+    guitar = object;
+
+    // guitar.scale.z = -1; // WRONG ORIENTATION?????????
+    
+    // scene.add(guitar);
+
+    // guitar.rotation.set(0, Math.PI, Math.PI);
+    guitar.rotation.set(Math.PI, 0, 0);
+    guitarPivot.add(guitar);
+
+    guitarGroup.position.set(-0.4, 0.025, 1.075);
+    guitarGroup.rotation.set(0, Math.PI, 0);
+
+    var hel = new THREE.AxesHelper();
+    hel.position.set(0, 0, 0);
+    scene.add(hel);
+
+
+    // Add strings
+
+    const cylinderGeometry = new THREE.CylinderGeometry( 0.00125, 0.00125, 0.69, 8 );
+
+    const stringMaterial = new THREE.MeshBasicMaterial( { color: 0xf0f0f0 } ); // 0xffff00
+
+
+    var offset = 0.0075;
+
+    var start = -0.076;
+
+    var rOffset = 0.0075; // rotation offset
+
+    var rpOffset = 0.005 / 2; // rotation offset for position
+
+    for (let i = 0; i < 6; i++) {
+
+      var string = new THREE.Mesh( cylinderGeometry, stringMaterial );
+
+      guitar.add( string );
+
+      string.position.set(start + offset * i + (rpOffset * -2 + rpOffset * i), 0.05, 0.01);
+
+      string.rotation.set(0, 0, (rOffset * -2 + rOffset * i));
+
+    }
+
+
+    console.log("Model loaded successfully!");
+
+
+  } catch (error) {
+
+    console.error("Something went wrong loading the assets:", error);
+
+  }
+
+}
+
+
+initModel();
+
+
+
+
+
+
+
+setStatus('Loading guitar pose data…'); setBar(0.9);
+
+
+// ── Load guitar pose data ────────────────────────────────────────────────────────────
+
+
+try {
+
+  var guitarFrameData = await fetch(`./data/${VIDEO}/guitar/outdata.json`).then(r => r.json());
+
+   
+
+  if (!guitarFrameData || guitarFrameData.length === 0) {
+
+    throw new Error("Guitar frame data is empty or invalid.");
+
+  }
+
+
+  console.log("Guitar frame data loaded successfully!");
+
+
+  // if (!guitarFrameData.ok) { throw new Error(`HTTP error! status: ${guitarFrameData.status}`); }
+
+
+  // compute averages for outliers detection
+
+  avgTvec = FUNC.computeAverageVec(guitarFrameData, 0);
+
+  avgRvec = FUNC.computeAverageVec(guitarFrameData, 1);
+
+
+  // initDemo(guitarFrameData);
+
+} catch (error) {
+
+  console.error("Could not load JSON file:", error);
+
+}
+
+
+
+
+
+
+
+
+
+function render(time) {
+
+  requestAnimationFrame(render);
+
+
+
+
+  if (playing) {
+    // 1. Get the current physical time of the audio track
+    const currentAudioTime = videoSound.currentTime;
+
+    // 2. Map that time to your source 240fps data array index
+    //    Frame index = current time * original sample rate (240)
+    frameIdx = Math.floor(currentAudioTime * 240);
+
+    // 3. Safety boundaries so it doesn't try to look up non-existent frames
+    if (frameIdx >= N) {
+      frameIdx = N - 1;
+      playing = false;
+      document.getElementById('btn-play').textContent = '▶ Play';
+    }
+  }
+
+
+
+
+  // update hands
+
+  updateMesh(right, rightVerts, frameIdx);
+
+  updateMesh(left,  leftVerts,  frameIdx);
+
+
+  // update guitar
+
+  // outliers: use a difference vector and check if it isn't too far away from the average position
+
+  while (guitarFrameData[frameIdx] && FUNC.vecDist(guitarFrameData[frameIdx][0], avgTvec) > 0.2) { // tvec.x
+
+    frameIdx -= 1;
+
+  }
+
+
+  var guitarPositionOffset = [-2.4, -2, 0.5];
+  guitarPositionOffset = [-2.4, 2, 0.5];
+
+  if (guitarFrameData[frameIdx]) {
+    const [rvec, tvec] = guitarFrameData[frameIdx];
+
+    // Build rotation matrix from the Rodrigues vector
+    const angle = Math.sqrt(rvec[0]**2 + rvec[1]**2 + rvec[2]**2);
+    const axis = new THREE.Vector3(rvec[0], rvec[1], rvec[2]).normalize();
+    const q = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+
+    guitarPivot.position.set(tvec[0], tvec[1], tvec[2]);
+    guitarPivot.quaternion.copy(q);
+
+    // guitarGroup.rotation.set(0, Math.PI * frameIdx / 100, 0);
+
+
+    // WARNING: NOT USING THE Z VALUE FROM POSE ESTIMATION (known issue with aruco markers)
+
+    // guitar.position.set(tvec[0] + guitarPositionOffset[0], -tvec[1] + guitarPositionOffset[1], guitarPositionOffset[2]); // tvec[2] + guitarPositionOffset[2]
+
+    // guitar.rotation.set(rvec[0], rvec[1], rvec[2] - Math.PI / 2 - Math.PI / 7);
+
+  }
+
+
+
+  const fi = meta.frameIndex[frameIdx];
+
+  frameInfo.textContent =
+
+    `Frame: ${frameIdx} / ${N}       R:${fi.right ? '✓' : '–'}  L:${fi.left ? '✓' : '–'}`;
+
+
+  let fps = 240 * speedMul;
+
+  let progress = Math.floor(frameIdx / 240);
+
+  let totalLength = Math.floor(N / 240);
+
+  timeInfo.textContent = "Time:" + FUNC.formatPlaybackInfoTime(progress, totalLength) + (`       ${meta.fps} fps`);
+
+
+  controls.update();
+
+  renderer.render(scene, camera);
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ── Controls ───────────────────────────────────────────────────────────────
+
+document.getElementById('btn-play').addEventListener('click', () => {
+
+  playing = !playing;
+
+  document.getElementById('btn-play').textContent = playing ? '⏸ Pause' : '▶ Play';
+
+  if (playing) {
+
+    videoSound.play().catch(error => {
+
+      console.log("Autoplay was prevented by the browser:", error);
+
+    });
+
+  } else {
+
+    videoSound.pause();
+
+  }
+
+ 
+
+});
+
+document.getElementById('btn-reset').addEventListener('click', () => {
+
+  videoSound.currentTime = 0;
+  frameIdx = 0; lastTime = 0;
+
+});
+
+document.getElementById('speed').addEventListener('input', e => {
+
+  speedMul = parseFloat(e.target.value);
+
+  document.getElementById('speed-val').textContent = speedMul + '×';
+
+  videoSound.playbackRate = speedMul;
+
+});
+
+document.getElementById('chk-wire').addEventListener('change', e => {
+
+  right.wire.visible = e.target.checked;
+
+  left.wire.visible  = e.target.checked;
+
+});
+
+document.getElementById('chk-axes').addEventListener('change', e => {
+
+  axes.visible = e.target.checked;
+
+  grid.visible = e.target.checked;
+
+});
+
+
+
+
+
+
+
+setStatus('Ready ✓'); setBar(1);
+
+for (const ctrl of document.getElementsByClassName('ctrl')) {
+
+  ctrl.style.display = 'flex';
+
+}
+
+setTimeout(() => bar.parentElement.style.display = 'none', 600);
+
+
+requestAnimationFrame(t => { lastTime = t; render(t); });
+
+</script>
+
+</body>
+
+</html>
